@@ -137,7 +137,7 @@ jobs:
           VERSION_NUMBER=$(aws ec2 describe-launch-template-versions \
             --launch-template-id $LT_ID \
             --region $AWS_REGION \
-            --query "LaunchTemplateVersions[?versionDescription=='Deploy $NEW_TAG'] | [0].LaunchTemplateVersion \
+            --query "LaunchTemplateVersions[?versionDescription=='Deploy $NEW_TAG'] | [0].LaunchTemplateVersion" \
             --output text)
 
             echo "Found Launch Template Version: $VERSION_NUMBER"
