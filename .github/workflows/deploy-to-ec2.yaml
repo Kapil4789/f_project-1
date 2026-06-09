@@ -109,5 +109,53 @@ jobs:
             --version-description "Updated with image tag ${{ env.IMAGE_TAG }}" \
             --source-version 1 \
             --launch-template-data "{\"UserData\": \"$new_user_data\"}"
-  
+  trigger_asg_refresh:
+    name: Trigger ASG Group Refresh
+    runs-on: ubuntu-latest
+    needs: [update_launch_template, build_and_push]
+    environment: prod
+    env:
+      IMG_TAG: ${{ needs.build_and_push.outputs.new-image-tag }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: wait briefly before triggering ASG refresh
+        run: sleep 10
+      
+      - name: Find latest launch template version
+        id: ltver
+        run: |
+          NEW_TAG="${{ env.IMG_TAG }}"
+          echo "Looking for LT version with image tag Deploy $NEW_TAG...."
+
+          VERSION_NUMBER=$(aws ec2 describe-launch-template-versions \
+            --launch-template-id $LT_ID \
+            --region $AWS_REGION \
+            --query "LaunchTemplateVersions[?versionDescription=='Deploy $NEW_TAG'] | [0].LaunchTemplateVersion \
+            --output text)
+
+            echo "Found Launch Template Version: $VERSION_NUMBER"
+            echo "lt_version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Trigger ASG instance refresh
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name $ASG_NAME \
+            --preferences "{
+              \"MinHealthyPercentage\": 50,
+              \"InstanceWarmup\": 300
+            }"
+            --region $AWS_REGION
+            --desired-configuration "{
+              \"LaunchTemplate\": {
+                \"LaunchTemplateId\": \"$LT_ID\",
+                \"Version\": \"$ver\"
+              }
+            }"
 
