@@ -25,14 +25,11 @@ RUN adduser --disabled-password --gecos '' appuser
 COPY --from=builder /usr/local  /usr/local
 
 
+COPY . .
 
 RUN chown -R appuser:appuser /app
+
 USER appuser
-
-
-
-
-COPY . .
 
 EXPOSE 5000
 
