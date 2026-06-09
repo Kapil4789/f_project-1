@@ -56,6 +56,8 @@ jobs:
     environment: prod
     env:
       IMAGE_TAG: ${{ needs.build_and_push.outputs.new-image-tag }}
+    outputs:
+      lt_version: ${{ steps.create_lt_version.outputs.lt_version }}
 
     steps:
       - name: Configure AWS credentials
@@ -103,12 +105,17 @@ jobs:
 
 
       - name: Create new launch template version
+        id: create_lt_version
         run: |
-          aws ec2 create-launch-template-version \
+          VERSION_NUMBER=$(aws ec2 create-launch-template-version \
             --launch-template-id ${{ env.LT_ID }} \
             --version-description "Deploy ${{ env.IMAGE_TAG }}" \
             --source-version 1 \
-            --launch-template-data "{\"UserData\": \"$new_user_data\"}"
+            --launch-template-data "{\"UserData\": \"$new_user_data\"}" \
+            --query "LaunchTemplateVersion.VersionNumber" \
+            --output text)
+          echo "lt_version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
+          echo "Created launch template version $VERSION_NUMBER"
   trigger_asg_refresh:
     name: Trigger ASG Group Refresh
     runs-on: ubuntu-latest
@@ -128,24 +135,9 @@ jobs:
       - name: wait briefly before triggering ASG refresh
         run: sleep 10
       
-      - name: Find latest launch template version
-        id: ltver
-        run: |
-          NEW_TAG="${{ env.IMG_TAG }}"
-          echo "Looking for LT version with image tag Deploy $NEW_TAG...."
-
-          VERSION_NUMBER=$(aws ec2 describe-launch-template-versions \
-            --launch-template-id $LT_ID \
-            --region $AWS_REGION \
-            --query "LaunchTemplateVersions[?versionDescription=='Deploy $NEW_TAG'] | [0].LaunchTemplateVersion" \
-            --output text)
-
-            echo "Found Launch Template Version: $VERSION_NUMBER"
-            echo "lt_version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
-
       - name: Trigger ASG instance refresh
         run: |
-          LT_VERSION="${{ steps.ltver.outputs.lt_version }}"
+          LT_VERSION="${{ needs.update_launch_template.outputs.lt_version }}"
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name $ASG_NAME \
             --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
