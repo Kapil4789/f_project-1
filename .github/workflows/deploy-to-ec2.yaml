@@ -68,7 +68,7 @@ jobs:
       - name: Render new user-data with updated image tag
         id: userdata
         run: |
-          TAG = "${{ env.IMAGE_TAG }}"
+          TAG="${{ env.IMAGE_TAG }}"
           
           cat <<EOF > new_user_data.txt
           
