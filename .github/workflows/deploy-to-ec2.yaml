@@ -147,15 +147,7 @@ jobs:
         run: |
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name $ASG_NAME \
-            --preferences "{
-              \"MinHealthyPercentage\": 50,
-              \"InstanceWarmup\": 300
-            }"
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
+            --desired-configuration '{"LaunchTemplate": {"LaunchTemplateId": "'$LT_ID'", "Version": "'${{ steps.ltver.outputs.lt_version }}'}}' \
             --region $AWS_REGION
-            --desired-configuration "{
-              \"LaunchTemplate\": {
-                \"LaunchTemplateId\": \"$LT_ID\",
-                \"Version\": \"$ver\"
-              }
-            }"
 
