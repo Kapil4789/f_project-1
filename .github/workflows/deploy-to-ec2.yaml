@@ -106,7 +106,7 @@ jobs:
         run: |
           aws ec2 create-launch-template-version \
             --launch-template-id ${{ env.LT_ID }} \
-            --version-description "Updated with image tag ${{ env.IMAGE_TAG }}" \
+            --version-description "Deploy ${{ env.IMAGE_TAG }}" \
             --source-version 1 \
             --launch-template-data "{\"UserData\": \"$new_user_data\"}"
   trigger_asg_refresh:
