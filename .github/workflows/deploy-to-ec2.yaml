@@ -6,8 +6,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPO: my-flask-app-asg
-  LT_ID: my-flask-app
+  ECR_REPO: 339712743075.dkr.ecr.us-east-1.amazonaws.com/flask-app
+  LT_ID: lt-098305dabb9bce321
   ASG_NAME: flask-app-asg
 
 
@@ -48,5 +48,5 @@ jobs:
       - name: Build tag, and push to ECR
         run: |
           docker build -t $ECR_REPO:$new_image_tag .
-          docker tag $ECR_REPO:$new_image_tag ${{ env.AWS_REGION }}
+          docker tag $ECR_REPO:$new_image_tag
 
