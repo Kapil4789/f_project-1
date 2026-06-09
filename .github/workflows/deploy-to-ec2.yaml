@@ -49,4 +49,65 @@ jobs:
         run: |
           docker build -t $ECR_REPO:$new_image_tag .
           docker push $ECR_REPO:$new_image_tag
+  update_launch_template:
+    name: Update ASG Launch Template
+    runs-on: ubuntu-latest
+    needs: build_and_push
+    environment: prod
+    env:
+      IMAGE_TAG: ${{ needs.build_and_push.outputs.new-image-tag }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Render new user-data with updated image tag
+        id: userdata
+        run: |
+          TAG = "${{ env.IMAGE_TAG }}"
+          
+          cat <<EOF > new_user_data.txt
+          
+          #!/bin/bash
+          
+          apt-get update -y
+          apt-get install -y docker.io unzip
+          systemctl start docker
+          
+          usermod -aG docker ubuntu
+
+          cd /tmp
+
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install
+
+
+          aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
+
+          docker pull ${ECR_REPO}:${TAG}
+          docker rm -f flask-app || true
+          docker run -d --name flask-app -p 80:5000 ${ECR_REPO}:${TAG}
+          EOF
+
+          
+          # Base64 encode the user-data script
+          NEW_USER_DATA=$(base64 -w 0 new_user_data.txt)
+          echo "new_user_data=$NEW_USER_DATA" >> $GITHUB_ENV
+
+          cat new_user_data.txt
+
+
+      - name: Create new launch template version
+        run: |
+          aws ec2 create-launch-template-version \
+            --launch-template-id ${{ env.LT_ID }} \
+            --version-description "Updated with image tag ${{ env.IMAGE_TAG }}" \
+            --source-version 1 \
+            --launch-template-data "{\"UserData\": \"$new_user_data\"}"
+  
 
