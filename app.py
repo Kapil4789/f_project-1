@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 @app.route("/")
 def home():
   app.logger.info("Home endpoint hit")
-  return jsonify({"message": "Hello from flask App v4!"})
+  return jsonify({"message": "Hello from flask App"})
 
 
 @app.route("/health")

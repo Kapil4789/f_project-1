@@ -6,8 +6,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPO: 339712743075.dkr.ecr.us-east-1.amazonaws.com/flask-app
-  LT_ID: lt-098305dabb9bce321
+  ECR_REPO: 680871073533.dkr.ecr.us-east-1.amazonaws.com/flask-app
+  LT_ID: lt-062d695e7b63ebec3
   ASG_NAME: flask-app-asg
 
 
