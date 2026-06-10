@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     outputs:
-      new-image-tag: ${{ steps.tag.outputs.new_image_tag }}
+      new-image-tag: ${{ steps.tag.outputs.new-image-tag }}
 
     steps:
       - name: Checkout repo
