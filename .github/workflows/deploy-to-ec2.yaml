@@ -77,57 +77,94 @@ jobs:
           cat <<'EOF' > new_user_data.txt
           #!/bin/bash
           set -e
-          exec > >(tee /var/log/user-data.log)
+          
+          # Setup logging
+          LOG_FILE="/var/log/user-data.log"
+          exec > >(tee -a $LOG_FILE)
           exec 2>&1
           
-          echo "=== User Data Script Started ==="
-          echo "Date: $(date)"
+          echo "========================================="
+          echo "User Data Script Started: $(date)"
+          echo "========================================="
           
           TAG="TAG_PLACEHOLDER"
           AWS_REGION="AWS_REGION_PLACEHOLDER"
           ECR_REPO="ECR_REPO_PLACEHOLDER"
           
-          echo "TAG: $TAG"
-          echo "AWS_REGION: $AWS_REGION"
-          echo "ECR_REPO: $ECR_REPO"
+          echo "Configuration:"
+          echo "  TAG: $TAG"
+          echo "  AWS_REGION: $AWS_REGION"
+          echo "  ECR_REPO: $ECR_REPO"
           
-          echo "=== Updating APT packages ==="
-          apt-get update -y
+          # Update package lists
+          echo ""
+          echo "Step 1: Updating package lists..."
+          apt-get update -y || { echo "Failed to update packages"; exit 1; }
           
-          echo "=== Installing Docker and other tools ==="
-          apt-get install -y docker.io unzip curl
+          # Install dependencies
+          echo ""
+          echo "Step 2: Installing dependencies (docker.io, unzip, curl, awscli)..."
+          apt-get install -y docker.io unzip curl awscli || { echo "Failed to install dependencies"; exit 1; }
           
-          echo "=== Starting Docker service ==="
-          systemctl start docker
-          systemctl enable docker
+          # Start and enable Docker
+          echo ""
+          echo "Step 3: Starting Docker service..."
+          systemctl start docker || { echo "Failed to start docker"; exit 1; }
+          systemctl enable docker || { echo "Failed to enable docker"; exit 1; }
+          sleep 2
           
-          echo "=== Adding ubuntu user to docker group ==="
-          usermod -aG docker ubuntu
+          # Verify Docker is running
+          echo "Docker status:"
+          systemctl status docker
           
-          echo "=== Downloading AWS CLI ==="
+          # Add ubuntu user to docker group
+          echo ""
+          echo "Step 4: Configuring Docker permissions..."
+          usermod -aG docker ubuntu || { echo "Failed to add ubuntu user to docker group"; exit 1; }
+          newgrp docker <<'NEWGRP' || true
+          echo "Docker group activated"
+          NEWGRP
+          
+          # Download and install AWS CLI v2
+          echo ""
+          echo "Step 5: Installing AWS CLI..."
           cd /tmp
-          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" || { echo "Failed to download AWS CLI"; exit 1; }
           unzip -q awscliv2.zip
+          ./aws/install || { echo "Failed to install AWS CLI"; exit 1; }
+          aws --version
           
-          echo "=== Installing AWS CLI ==="
-          sudo ./aws/install
+          # Login to ECR
+          echo ""
+          echo "Step 6: Logging into ECR..."
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO || { echo "Failed to login to ECR"; exit 1; }
           
-          echo "=== Logging into ECR ==="
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+          # Pull Docker image
+          echo ""
+          echo "Step 7: Pulling Docker image..."
+          docker pull $ECR_REPO:$TAG || { echo "Failed to pull image"; exit 1; }
           
-          echo "=== Pulling Docker image ==="
-          docker pull $ECR_REPO:$TAG
-          
-          echo "=== Stopping existing container ==="
+          # Remove old container if exists
+          echo ""
+          echo "Step 8: Cleaning up old container..."
           docker rm -f flask-app || true
           
-          echo "=== Starting Flask application ==="
-          docker run -d --name flask-app -p 80:5000 $ECR_REPO:$TAG
+          # Run Docker container
+          echo ""
+          echo "Step 9: Starting Flask container..."
+          docker run -d --name flask-app -p 80:5000 $ECR_REPO:$TAG || { echo "Failed to run container"; exit 1; }
+          sleep 3
           
-          echo "=== Checking running containers ==="
+          # Verify container is running
+          echo ""
+          echo "Step 10: Verifying container status..."
           docker ps -a
+          docker logs flask-app || true
           
-          echo "=== User Data Script Completed ==="
+          echo ""
+          echo "========================================="
+          echo "User Data Script Completed: $(date)"
+          echo "========================================="
           EOF
           
           # Replace placeholders with actual values
