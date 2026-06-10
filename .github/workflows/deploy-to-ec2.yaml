@@ -71,51 +71,64 @@ jobs:
         id: userdata
         run: |
           TAG="${{ env.IMAGE_TAG }}"
+          AWS_REGION="${{ env.AWS_REGION }}"
+          ECR_REPO="${{ env.ECR_REPO }}"
           
-          cat <<EOF > new_user_data.txt
-          
+          cat <<'EOF' > new_user_data.txt
           #!/bin/bash
+          set -e
+          
+          TAG="TAG_PLACEHOLDER"
+          AWS_REGION="AWS_REGION_PLACEHOLDER"
+          ECR_REPO="ECR_REPO_PLACEHOLDER"
           
           apt-get update -y
           apt-get install -y docker.io unzip
           systemctl start docker
-          
           usermod -aG docker ubuntu
-
+          
           cd /tmp
-
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
           unzip awscliv2.zip
           sudo ./aws/install
-
-
-          aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
-
-          docker pull ${ECR_REPO}:${TAG}
-          docker rm -f flask-app || true
-          docker run -d --name flask-app -p 80:5000 ${ECR_REPO}:${TAG}
-          EOF
-
           
-          # Base64 encode the user-data script
-          NEW_USER_DATA=$(base64 -w 0 new_user_data.txt)
-          echo "new_user_data=$NEW_USER_DATA" >> $GITHUB_ENV
-
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+          docker pull $ECR_REPO:$TAG
+          docker rm -f flask-app || true
+          docker run -d --name flask-app -p 80:5000 $ECR_REPO:$TAG
+          EOF
+          
+          # Replace placeholders with actual values
+          sed -i "s|TAG_PLACEHOLDER|$TAG|g" new_user_data.txt
+          sed -i "s|AWS_REGION_PLACEHOLDER|$AWS_REGION|g" new_user_data.txt
+          sed -i "s|ECR_REPO_PLACEHOLDER|$ECR_REPO|g" new_user_data.txt
+          
+          # Output the final user-data
+          echo "=== Final user-data script ==="
           cat new_user_data.txt
-
+          echo "=== End user-data script ==="
 
       - name: Create new launch template version
         id: create_lt_version
         run: |
+          AWS_REGION="${{ env.AWS_REGION }}"
+          ECR_REPO="${{ env.ECR_REPO }}"
+          LT_ID="${{ env.LT_ID }}"
+          TAG="${{ env.IMAGE_TAG }}"
+          
+          # Read the user-data file
+          USER_DATA_B64=$(base64 -w 0 new_user_data.txt)
+          
           VERSION_NUMBER=$(aws ec2 create-launch-template-version \
-            --launch-template-id ${{ env.LT_ID }} \
-            --version-description "Deploy ${{ env.IMAGE_TAG }}" \
+            --launch-template-id $LT_ID \
+            --version-description "Deploy $TAG" \
             --source-version 1 \
-            --launch-template-data "{\"UserData\": \"$new_user_data\"}" \
+            --launch-template-data '{"UserData":"'$USER_DATA_B64'"}' \
             --query "LaunchTemplateVersion.VersionNumber" \
             --output text)
+          
           echo "lt_version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
-          echo "Created launch template version $VERSION_NUMBER"
+          echo "Created launch template version: $VERSION_NUMBER"
   trigger_asg_refresh:
     name: Trigger ASG Group Refresh
     runs-on: ubuntu-latest
