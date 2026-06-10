@@ -1,45 +1,42 @@
-name: CI/CD Pipeline
+name: CI-CD -> EC2 Rolling update via ASG
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [ main ]
 
 env:
-  AWS_REGION: us-east-1                         # Change to your AWS region
-  ECR_REPOSITORY: 680871073533.dkr.ecr.us-east-1.amazonaws.com/flask-app           # Change to your ECR repository name
-  LAUNCH_TEMPLATE_ID: lt-062d695e7b63ebec3      # Change to your Launch Template ID
-  ASG_NAME: flask-app-asg        # Change to your ASG name
-  IMAGE_TAG: ${{ github.sha }}
+  AWS_REGION: us-east-1
+  ECR_REPO: 680871073533.dkr.ecr.us-east-1.amazonaws.com/flask-app
+  LT_ID: lt-062d695e7b63ebec3
+  ASG_NAME: flask-app-asg
+
 
 jobs:
-  # ──────────────────────────────────────────────
-  # Job 1: Build Docker image and push to ECR
-  # ──────────────────────────────────────────────
   build_and_push:
-    name: Build & Push Docker Image
+    name: Build and Push to ECR
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-
+    environment: prod
     outputs:
       image_uri: ${{ steps.build.outputs.image_uri }}
 
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::680871073533:role/github-actions-role
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
       - name: Log in to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          region: ${{ env.AWS_REGION }}
 
       - name: Build, tag, and push image to ECR
         id: build
@@ -47,32 +44,25 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-
+ 
           echo "Building image: $IMAGE_URI"
           docker build -t "$IMAGE_URI" .
-
+ 
           echo "Pushing image to ECR..."
           docker push "$IMAGE_URI"
-
+ 
           # Also tag as latest
           docker tag "$IMAGE_URI" "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-
+ 
           echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
           echo "✅ Image pushed: $IMAGE_URI"
 
-  # ──────────────────────────────────────────────
-  # Job 2: Update the EC2 Launch Template with
-  #         the new AMI / user-data / image URI
-  # ──────────────────────────────────────────────
   update_launch_template:
     name: Update Launch Template
     runs-on: ubuntu-latest
     needs: build_and_push
-    permissions:
-      id-token: write
-      contents: read
-
+ 
     outputs:
       latest_version: ${{ steps.update.outputs.latest_version }}
 
@@ -80,7 +70,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::680871073533:role/github-actions-role
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Create new Launch Template version
@@ -89,7 +80,7 @@ jobs:
           IMAGE_URI: ${{ needs.build_and_push.outputs.image_uri }}
         run: |
           echo "Creating new Launch Template version for $LAUNCH_TEMPLATE_ID"
-
+ 
           # Build user-data script that pulls the new image on instance boot
           USER_DATA=$(cat <<EOF | base64 -w 0
           #!/bin/bash
@@ -103,7 +94,7 @@ jobs:
           docker run -d --name app --restart unless-stopped -p 80:8080 $IMAGE_URI
           EOF
           )
-
+ 
           # Create a new version of the Launch Template
           NEW_VERSION=$(aws ec2 create-launch-template-version \
             --launch-template-id "$LAUNCH_TEMPLATE_ID" \
@@ -111,41 +102,34 @@ jobs:
             --launch-template-data "{\"UserData\":\"$USER_DATA\"}" \
             --query 'LaunchTemplateVersion.VersionNumber' \
             --output text)
-
+ 
           echo "New Launch Template version: $NEW_VERSION"
-
+ 
           # Set it as the default version
           aws ec2 modify-launch-template \
             --launch-template-id "$LAUNCH_TEMPLATE_ID" \
             --default-version "$NEW_VERSION"
-
+ 
           echo "latest_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "✅ Launch Template updated to version $NEW_VERSION"
-
-  # ──────────────────────────────────────────────
-  # Job 3: Trigger an ASG Instance Refresh so
-  #         running instances roll to the new LT
-  # ──────────────────────────────────────────────
   trigger_asg_refresh:
     name: Trigger ASG Instance Refresh
     runs-on: ubuntu-latest
     needs: update_launch_template
-    permissions:
-      id-token: write
-      contents: read
 
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::680871073533:role/github-actions-role
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Start Instance Refresh
         id: refresh
         run: |
           echo "Starting instance refresh for ASG: $ASG_NAME"
-
+ 
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG_NAME" \
             --strategy Rolling \
@@ -157,24 +141,24 @@ jobs:
             }' \
             --query 'InstanceRefreshId' \
             --output text)
-
+ 
           echo "refresh_id=$REFRESH_ID" >> "$GITHUB_OUTPUT"
           echo "✅ Instance refresh started: $REFRESH_ID"
-
+ 
       - name: Wait for Instance Refresh to complete
         run: |
           REFRESH_ID="${{ steps.refresh.outputs.refresh_id }}"
           echo "Polling refresh status for ID: $REFRESH_ID"
-
+ 
           for i in $(seq 1 40); do
             STATUS=$(aws autoscaling describe-instance-refreshes \
               --auto-scaling-group-name "$ASG_NAME" \
               --instance-refresh-ids "$REFRESH_ID" \
               --query 'InstanceRefreshes[0].Status' \
               --output text)
-
+ 
             echo "[$i/40] Status: $STATUS"
-
+ 
             case "$STATUS" in
               Successful)
                 echo "✅ Instance refresh completed successfully."
@@ -190,6 +174,7 @@ jobs:
                 ;;
             esac
           done
-
+ 
           echo "⚠️ Timed out waiting for instance refresh."
           exit 1
+ 
