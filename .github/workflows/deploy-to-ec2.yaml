@@ -151,8 +151,37 @@ jobs:
       - name: Trigger ASG instance refresh
         run: |
           LT_VERSION="${{ needs.update_launch_template.outputs.lt_version }}"
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name $ASG_NAME \
-            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
-            --desired-configuration "{\"LaunchTemplate\": {\"LaunchTemplateId\": \"$LT_ID\", \"Version\": \"$LT_VERSION\"}}" \
-            --region $AWS_REGION
+          MAX_RETRIES=5
+          RETRY_DELAY=30
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES: Checking for in-progress refresh..."
+            
+            # Check if a refresh is already in progress
+            REFRESH_STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name $ASG_NAME \
+              --region $AWS_REGION \
+              --query "InstanceRefreshes[0].Status" \
+              --output text 2>/dev/null || echo "None")
+            
+            if [ "$REFRESH_STATUS" = "InProgress" ] || [ "$REFRESH_STATUS" = "Pending" ]; then
+              if [ $i -lt $MAX_RETRIES ]; then
+                echo "Instance refresh already in progress. Waiting ${RETRY_DELAY}s before retry..."
+                sleep $RETRY_DELAY
+                continue
+              else
+                echo "Max retries reached. Instance refresh still in progress. Skipping new refresh."
+                exit 0
+              fi
+            fi
+            
+            echo "No refresh in progress. Triggering new instance refresh..."
+            aws autoscaling start-instance-refresh \
+              --auto-scaling-group-name $ASG_NAME \
+              --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}' \
+              --desired-configuration "{\"LaunchTemplate\": {\"LaunchTemplateId\": \"$LT_ID\", \"Version\": \"$LT_VERSION\"}}" \
+              --region $AWS_REGION
+            
+            echo "Instance refresh triggered successfully."
+            exit 0
+          done
