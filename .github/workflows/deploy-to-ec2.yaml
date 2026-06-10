@@ -47,8 +47,35 @@ jobs:
 
       - name: Build tag, and push to ECR
         run: |
-          docker build -t $ECR_REPO:$new_image_tag .
-          docker push $ECR_REPO:$new_image_tag
+          echo "Building Docker image..."
+          echo "  Repository: $ECR_REPO"
+          echo "  Tag: $new_image_tag"
+          
+          docker build -t $ECR_REPO:$new_image_tag . || {
+            echo "ERROR: Failed to build Docker image"
+            exit 1
+          }
+          
+          echo "✓ Image built successfully"
+          echo ""
+          echo "Pushing image to ECR (with retries)..."
+          
+          MAX_PUSH_RETRIES=3
+          PUSH_RETRY_DELAY=10
+          
+          for attempt in $(seq 1 $MAX_PUSH_RETRIES); do
+            echo "  Attempt $attempt of $MAX_PUSH_RETRIES..."
+            if docker push $ECR_REPO:$new_image_tag; then
+              echo "✓ Image pushed successfully"
+              exit 0
+            elif [ $attempt -lt $MAX_PUSH_RETRIES ]; then
+              echo "  Failed to push. Waiting ${PUSH_RETRY_DELAY}s before retry..."
+              sleep $PUSH_RETRY_DELAY
+            else
+              echo "ERROR: Failed to push image after $MAX_PUSH_RETRIES attempts"
+              exit 1
+            fi
+          done
   update_launch_template:
     name: Update ASG Launch Template
     runs-on: ubuntu-latest
@@ -103,8 +130,8 @@ jobs:
           
           # Install dependencies
           echo ""
-          echo "Step 2: Installing dependencies (docker.io, unzip, curl, awscli)..."
-          apt-get install -y docker.io unzip curl awscli || { echo "Failed to install dependencies"; exit 1; }
+          echo "Step 2: Installing dependencies (docker.io, unzip, curl)..."
+          apt-get install -y docker.io unzip curl || { echo "Failed to install dependencies"; exit 1; }
           
           # Start and enable Docker
           echo ""
@@ -117,17 +144,9 @@ jobs:
           echo "Docker status:"
           systemctl status docker
           
-          # Add ubuntu user to docker group
+          # Download and install AWS CLI v2 (not v1 from apt)
           echo ""
-          echo "Step 4: Configuring Docker permissions..."
-          usermod -aG docker ubuntu || { echo "Failed to add ubuntu user to docker group"; exit 1; }
-          newgrp docker <<'NEWGRP' || true
-          echo "Docker group activated"
-          NEWGRP
-          
-          # Download and install AWS CLI v2
-          echo ""
-          echo "Step 5: Installing AWS CLI..."
+          echo "Step 4: Installing AWS CLI v2..."
           cd /tmp
           curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" || { echo "Failed to download AWS CLI"; exit 1; }
           unzip -q awscliv2.zip
@@ -136,29 +155,51 @@ jobs:
           
           # Login to ECR
           echo ""
-          echo "Step 6: Logging into ECR..."
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO || { echo "Failed to login to ECR"; exit 1; }
+          echo "Step 5: Logging into ECR..."
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO || { echo "Failed to login to ECR. Check IAM role permissions."; exit 1; }
           
-          # Pull Docker image
+          # Pull Docker image with retries
           echo ""
-          echo "Step 7: Pulling Docker image..."
-          docker pull $ECR_REPO:$TAG || { echo "Failed to pull image"; exit 1; }
+          echo "Step 6: Pulling Docker image (with retries)..."
+          MAX_PULL_RETRIES=3
+          PULL_RETRY_DELAY=5
+          for attempt in $(seq 1 $MAX_PULL_RETRIES); do
+            echo "  Attempt $attempt of $MAX_PULL_RETRIES..."
+            if docker pull $ECR_REPO:$TAG; then
+              echo "  Successfully pulled image"
+              break
+            elif [ $attempt -lt $MAX_PULL_RETRIES ]; then
+              echo "  Failed to pull. Waiting ${PULL_RETRY_DELAY}s before retry..."
+              sleep $PULL_RETRY_DELAY
+            else
+              echo "Failed to pull image after $MAX_PULL_RETRIES attempts"
+              exit 1
+            fi
+          done
           
           # Remove old container if exists
           echo ""
-          echo "Step 8: Cleaning up old container..."
+          echo "Step 7: Cleaning up old container..."
           docker rm -f flask-app || true
           
           # Run Docker container
           echo ""
-          echo "Step 9: Starting Flask container..."
+          echo "Step 8: Starting Flask container..."
           docker run -d --name flask-app -p 80:5000 $ECR_REPO:$TAG || { echo "Failed to run container"; exit 1; }
           sleep 3
           
           # Verify container is running
           echo ""
-          echo "Step 10: Verifying container status..."
+          echo "Step 9: Verifying container status..."
           docker ps -a
+          CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' flask-app 2>/dev/null || echo "not found")
+          echo "Flask container status: $CONTAINER_STATUS"
+          if [ "$CONTAINER_STATUS" != "running" ]; then
+            echo "WARNING: Container is not running. Checking logs..."
+            docker logs flask-app || true
+            exit 1
+          fi
+          
           docker logs flask-app || true
           
           echo ""
@@ -185,37 +226,65 @@ jobs:
           LT_ID="${{ env.LT_ID }}"
           TAG="${{ env.IMAGE_TAG }}"
           
-          # Create a JSON file with the launch template data
-          cat > launch_template_data.json <<'JSONEOF'
-          {
-            "UserData": null
-          }
-          JSONEOF
+          echo "Creating launch template version:"
+          echo "  LT_ID: $LT_ID"
+          echo "  TAG: $TAG"
+          echo "  Description: Deploy $TAG"
+          
+          # Validate LT_ID is not empty
+          if [ -z "$LT_ID" ]; then
+            echo "ERROR: LT_ID is empty"
+            exit 1
+          fi
           
           # Read and base64 encode the user-data file
-          USER_DATA_B64=$(base64 -w 0 new_user_data.txt)
+          if [ ! -f new_user_data.txt ]; then
+            echo "ERROR: new_user_data.txt not found"
+            exit 1
+          fi
           
-          # Create the proper launch template data with base64 encoded UserData
+          USER_DATA_B64=$(base64 -w 0 new_user_data.txt)
+          USER_DATA_SIZE=${#USER_DATA_B64}
+          echo "User-data encoded size: $USER_DATA_SIZE bytes"
+          
+          # Verify base64 is not empty
+          if [ -z "$USER_DATA_B64" ]; then
+            echo "ERROR: Failed to base64 encode user-data"
+            exit 1
+          fi
+          
+          # Create the launch template data
           cat > launch_template_data.json <<EOF
           {
             "UserData": "$USER_DATA_B64"
           }
           EOF
           
-          echo "=== Launch Template Data ==="
-          cat launch_template_data.json
-          echo "=== End Launch Template Data ==="
+          echo "=== Launch Template Data (first 200 chars) ==="
+          head -c 200 launch_template_data.json
+          echo ""
+          echo "=== End Launch Template Data Preview ==="
           
+          # Create launch template version
           VERSION_NUMBER=$(aws ec2 create-launch-template-version \
             --launch-template-id $LT_ID \
             --version-description "Deploy $TAG" \
             --source-version 1 \
             --launch-template-data file://launch_template_data.json \
             --query "LaunchTemplateVersion.VersionNumber" \
-            --output text)
+            --output text 2>&1)
+          
+          # Check if version number is valid
+          if [ -z "$VERSION_NUMBER" ] || [ "$VERSION_NUMBER" = "None" ] || echo "$VERSION_NUMBER" | grep -q "error\|Error"; then
+            echo "ERROR: Failed to create launch template version"
+            echo "Response: $VERSION_NUMBER"
+            exit 1
+          fi
           
           echo "lt_version=$VERSION_NUMBER" >> $GITHUB_OUTPUT
-          echo "Created launch template version: $VERSION_NUMBER"
+          echo ""
+          echo "✓ Created launch template version: $VERSION_NUMBER"
+          echo "  Description: Deploy $TAG"
   trigger_asg_refresh:
     name: Trigger ASG Group Refresh
     runs-on: ubuntu-latest
@@ -238,10 +307,23 @@ jobs:
       - name: Trigger ASG instance refresh
         run: |
           LT_VERSION="${{ needs.update_launch_template.outputs.lt_version }}"
+          
+          # Validate critical variables
+          if [ -z "$LT_VERSION" ] || [ "$LT_VERSION" = "None" ]; then
+            echo "ERROR: Invalid launch template version: $LT_VERSION"
+            echo "LT_VERSION must be a numeric value"
+            exit 1
+          fi
+          
+          echo "Using launch template version: $LT_VERSION"
+          echo "ASG Name: $ASG_NAME"
+          echo "Region: $AWS_REGION"
+          
           MAX_RETRIES=5
           RETRY_DELAY=30
           
           for i in $(seq 1 $MAX_RETRIES); do
+            echo ""
             echo "Attempt $i of $MAX_RETRIES: Checking for in-progress refresh..."
             
             # Check if a refresh is already in progress
@@ -251,17 +333,21 @@ jobs:
               --query "InstanceRefreshes[0].Status" \
               --output text 2>/dev/null || echo "None")
             
+            echo "Current refresh status: $REFRESH_STATUS"
+            
             if [ "$REFRESH_STATUS" = "InProgress" ] || [ "$REFRESH_STATUS" = "Pending" ]; then
               if [ $i -lt $MAX_RETRIES ]; then
                 echo "Instance refresh already in progress. Waiting ${RETRY_DELAY}s before retry..."
                 sleep $RETRY_DELAY
                 continue
               else
-                echo "Max retries reached. Instance refresh still in progress. Skipping new refresh."
+                echo "Max retries reached. Instance refresh still in progress."
+                echo "Skipping new refresh to avoid blocking. You can trigger manually after current refresh completes."
                 exit 0
               fi
             fi
             
+            echo ""
             echo "No refresh in progress. Triggering new instance refresh..."
             aws autoscaling start-instance-refresh \
               --auto-scaling-group-name $ASG_NAME \
@@ -269,6 +355,20 @@ jobs:
               --desired-configuration "{\"LaunchTemplate\": {\"LaunchTemplateId\": \"$LT_ID\", \"Version\": \"$LT_VERSION\"}}" \
               --region $AWS_REGION
             
-            echo "Instance refresh triggered successfully."
+            REFRESH_ID=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name $ASG_NAME \
+              --region $AWS_REGION \
+              --query "InstanceRefreshes[0].InstanceRefreshId" \
+              --output text)
+            
+            echo "Instance refresh triggered successfully!"
+            echo "Refresh ID: $REFRESH_ID"
+            echo ""
+            echo "Monitor refresh progress:"
+            echo "  aws autoscaling describe-instance-refreshes --auto-scaling-group-name $ASG_NAME --region $AWS_REGION"
+            
             exit 0
           done
+          
+          echo "ERROR: Failed to trigger instance refresh after $MAX_RETRIES attempts"
+          exit 1
