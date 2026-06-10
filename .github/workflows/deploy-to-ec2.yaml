@@ -78,6 +78,7 @@ jobs:
   update_launch_template:
     name: Update Launch Template
     runs-on: ubuntu-latest
+    environment: prod
     needs: build_and_push
  
     outputs:
@@ -159,6 +160,7 @@ jobs:
   trigger_asg_refresh:
     name: Trigger ASG Instance Refresh
     runs-on: ubuntu-latest
+    environment: prod
     needs: update_launch_template
 
     steps:
