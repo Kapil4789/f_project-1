@@ -122,7 +122,14 @@ jobs:
           
           docker stop app 2>/dev/null || true
           docker rm   app 2>/dev/null || true
-          docker run -d --name app --restart unless-stopped -p 80:5000 $IMAGE_URI
+          
+          echo "Starting Redis container..."
+          docker stop redis 2>/dev/null || true
+          docker rm   redis 2>/dev/null || true
+          docker run -d --name redis --restart unless-stopped -p 6379:6379 redis:alpine
+          
+          echo "Starting Application container..."
+          docker run -d --name app --restart unless-stopped -p 80:5000 --add-host=host.docker.internal:host-gateway $IMAGE_URI
           
           sleep 5
           if [ "\$(docker inspect -f '{{.State.Running}}' app)" != "true" ]; then
