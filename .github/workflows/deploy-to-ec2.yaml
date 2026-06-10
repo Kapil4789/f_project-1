@@ -77,25 +77,57 @@ jobs:
           cat <<'EOF' > new_user_data.txt
           #!/bin/bash
           set -e
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+          
+          echo "=== User Data Script Started ==="
+          echo "Date: $(date)"
           
           TAG="TAG_PLACEHOLDER"
           AWS_REGION="AWS_REGION_PLACEHOLDER"
           ECR_REPO="ECR_REPO_PLACEHOLDER"
           
+          echo "TAG: $TAG"
+          echo "AWS_REGION: $AWS_REGION"
+          echo "ECR_REPO: $ECR_REPO"
+          
+          echo "=== Updating APT packages ==="
           apt-get update -y
-          apt-get install -y docker.io unzip
+          
+          echo "=== Installing Docker and other tools ==="
+          apt-get install -y docker.io unzip curl
+          
+          echo "=== Starting Docker service ==="
           systemctl start docker
+          systemctl enable docker
+          
+          echo "=== Adding ubuntu user to docker group ==="
           usermod -aG docker ubuntu
           
+          echo "=== Downloading AWS CLI ==="
           cd /tmp
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip awscliv2.zip
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          
+          echo "=== Installing AWS CLI ==="
           sudo ./aws/install
           
+          echo "=== Logging into ECR ==="
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+          
+          echo "=== Pulling Docker image ==="
           docker pull $ECR_REPO:$TAG
+          
+          echo "=== Stopping existing container ==="
           docker rm -f flask-app || true
+          
+          echo "=== Starting Flask application ==="
           docker run -d --name flask-app -p 80:5000 $ECR_REPO:$TAG
+          
+          echo "=== Checking running containers ==="
+          docker ps -a
+          
+          echo "=== User Data Script Completed ==="
           EOF
           
           # Replace placeholders with actual values
@@ -116,14 +148,32 @@ jobs:
           LT_ID="${{ env.LT_ID }}"
           TAG="${{ env.IMAGE_TAG }}"
           
-          # Read the user-data file
+          # Create a JSON file with the launch template data
+          cat > launch_template_data.json <<'JSONEOF'
+          {
+            "UserData": null
+          }
+          JSONEOF
+          
+          # Read and base64 encode the user-data file
           USER_DATA_B64=$(base64 -w 0 new_user_data.txt)
+          
+          # Create the proper launch template data with base64 encoded UserData
+          cat > launch_template_data.json <<EOF
+          {
+            "UserData": "$USER_DATA_B64"
+          }
+          EOF
+          
+          echo "=== Launch Template Data ==="
+          cat launch_template_data.json
+          echo "=== End Launch Template Data ==="
           
           VERSION_NUMBER=$(aws ec2 create-launch-template-version \
             --launch-template-id $LT_ID \
             --version-description "Deploy $TAG" \
             --source-version 1 \
-            --launch-template-data '{"UserData":"'$USER_DATA_B64'"}' \
+            --launch-template-data file://launch_template_data.json \
             --query "LaunchTemplateVersion.VersionNumber" \
             --output text)
           
