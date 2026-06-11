@@ -7,6 +7,7 @@ import os
 from flask_compress import Compress
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from werkzeug.exceptions import HTTPException
 
 
 app = Flask(__name__)
@@ -22,7 +23,7 @@ logging.basicConfig(level=logging.INFO)
 @app.route("/")
 def home():
   app.logger.info("Home endpoint hit")
-  return jsonify({"message": "Hello from flask App"})
+  return jsonify({"message": "Hello from flask App v4!"})
 
 
 @app.route("/health")
@@ -39,7 +40,8 @@ def heavy():
 @cache.cached(timeout=30)  # Cache for 30 seconds
 def cacheme(param):
   app.logger.info(f"Cache result for:: {param}")
-  return jsonify({"message": f"Hello, {param}!", "random": random.randint(1, 1000)})  # Include timestamp to show caching effect
+  # Return a dictionary so Flask-Caching caches the picklable dict instead of TestResponse during testing
+  return {"message": f"Hello, {param}!", "random": random.randint(1, 1000)}
 
 
 @app.route("/error")
@@ -49,6 +51,8 @@ def error():
 
 @app.errorhandler(Exception)
 def handle_exception(e):
+  if isinstance(e, HTTPException):
+    return jsonify({"error": e.name, "message": e.description}), e.code
   app.logger.error("Unhandled exception: %s", str(e))
   return jsonify({"error": "An internal error occurred", "message": str(e)}), 500
 
